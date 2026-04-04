@@ -10,14 +10,62 @@ REST API for the [Spanish-English Discord](https://github.com/Jaleel-VS/the-span
 - [PostgreSQL](https://www.postgresql.org/) — database
 - [Docker](https://www.docker.com/) — containerized deployment (Railway)
 
-## Setup
+## Prerequisites
+
+- [Rust](https://www.rust-lang.org/tools/install) (2024 edition, stable)
+- [PostgreSQL](https://www.postgresql.org/download/) 15+
+- (Optional) [Docker](https://docs.docker.com/get-docker/) for containerized deployment
+
+## Local Development
+
+### 1. Set up Postgres
 
 ```bash
-# Start a local Postgres (or use your own)
-# Create database and user matching .env
+# macOS (Homebrew)
+brew install postgresql@15
+brew services start postgresql@15
 
-# Run migrations and start the server
+# Create the database and user
+psql postgres -c "CREATE USER hablemos WITH PASSWORD 'hablemos';"
+psql postgres -c "CREATE DATABASE hablemos_test OWNER hablemos;"
+```
+
+Or use Docker:
+
+```bash
+docker run -d --name hablemos-pg \
+  -e POSTGRES_USER=hablemos \
+  -e POSTGRES_PASSWORD=hablemos \
+  -e POSTGRES_DB=hablemos_test \
+  -p 5432:5432 \
+  postgres:15
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+# Edit .env if your Postgres credentials differ
+```
+
+The default `.env` expects:
+```
+DATABASE_URL=postgres://hablemos:hablemos@localhost:5432/hablemos_test
+```
+
+### 3. Run
+
+```bash
 make dev
+```
+
+This runs `cargo run`, which automatically applies migrations on startup and starts the server on `http://localhost:8080`.
+
+### 4. Verify
+
+```bash
+curl http://localhost:8080/health
+# → {"status":"healthy"}
 ```
 
 ### Environment Variables
