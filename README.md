@@ -109,6 +109,23 @@ erDiagram
         TIMESTAMPTZ created_at
     }
 
+    movies {
+        UUID id PK
+        VARCHAR(255) title
+        VARCHAR(2000) description
+        TEXT poster_url
+        VARCHAR(10) audio_language "en | es | both"
+        VARCHAR(10) subtitle_language "en | es | both | none"
+        VARCHAR(20) level "beginner | intermediate | advanced"
+        VARCHAR(100) country
+        VARCHAR(50) genre
+        INT release_year
+        TEXT url "streaming/info link"
+        BOOLEAN archived "default false"
+        TIMESTAMPTZ created_at
+        TIMESTAMPTZ updated_at
+    }
+
     podcasts ||--o{ link_reports : "has many"
 ```
 
@@ -128,6 +145,14 @@ graph LR
         DP[DELETE /api/podcasts/:id]
         AP[POST /api/podcasts/:id/archive]
         UAP[POST /api/podcasts/:id/unarchive]
+    end
+
+    subgraph Movies
+        LM[GET /api/movies]
+        GM[GET /api/movies/:id]
+        CM[POST /api/movies]
+        DM[DELETE /api/movies/:id]
+        DBM[DELETE /api/movies]
     end
 
     subgraph Link Reports
@@ -165,6 +190,106 @@ graph LR
 | `DELETE` | `/api/podcasts/:id/reports`       | Clear reports for podcast    | Admin |
 | `GET`    | `/api/link-reports/counts`        | All podcast report counts    | Admin |
 
+---
+
+### Movies (planned)
+
+| Method   | Path                | Description                        | Auth  |
+|----------|---------------------|------------------------------------|-------|
+| `GET`    | `/api/movies`       | List movies (filtered, paginated)  | —     |
+| `GET`    | `/api/movies/:id`   | Get single movie                   | —     |
+| `POST`   | `/api/movies`       | Create movie                       | Admin |
+| `DELETE` | `/api/movies/:id`   | Delete movie                       | Admin |
+| `DELETE` | `/api/movies`       | Bulk delete movies (body: `{ ids }`) | Admin |
+
+#### Query params for `GET /api/movies`
+
+| Param              | Type     | Description                                    |
+|--------------------|----------|------------------------------------------------|
+| `audioLanguage`    | `string` | Filter: `en`, `es`, `both`                     |
+| `subtitleLanguage` | `string` | Filter: `en`, `es`, `both`, `none`             |
+| `level`            | `string` | Filter: `beginner`, `intermediate`, `advanced`  |
+| `genre`            | `string` | Filter by genre                                |
+| `country`          | `string` | Filter by country of origin                    |
+| `search`           | `string` | Full-text search on title and description      |
+| `includeArchived`  | `bool`   | Include archived movies (default: false)       |
+| `page`             | `int`    | Page number (1-indexed, default: 1)            |
+| `pageSize`         | `int`    | Items per page (default: 20, max: 100)         |
+
+#### Movie JSON response
+
+```json
+{
+  "id": "uuid",
+  "title": "Pan's Labyrinth",
+  "description": "A girl escapes into a fantasy world...",
+  "posterUrl": "https://...",
+  "audioLanguage": "es",
+  "subtitleLanguage": "en",
+  "level": "advanced",
+  "country": "Spain",
+  "genre": "Fantasy",
+  "releaseYear": 2006,
+  "url": "https://...",
+  "archived": false,
+  "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-01T00:00:00Z"
+}
+```
+
+#### CreateMovieInput
+
+```json
+{
+  "title": "string (1-255)",
+  "description": "string (1-2000)",
+  "posterUrl": "valid URL",
+  "audioLanguage": "en | es | both",
+  "subtitleLanguage": "en | es | both | none",
+  "level": "beginner | intermediate | advanced",
+  "country": "string (1-100)",
+  "genre": "string (1-50)",
+  "releaseYear": 2006,
+  "url": "valid URL"
+}
+```
+
+#### Migration SQL (planned)
+
+```sql
+CREATE TABLE IF NOT EXISTS movies (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title              VARCHAR(255) NOT NULL,
+    description        VARCHAR(2000) NOT NULL,
+    poster_url         TEXT NOT NULL,
+    audio_language     VARCHAR(10) NOT NULL CHECK (audio_language IN ('en', 'es', 'both')),
+    subtitle_language  VARCHAR(10) NOT NULL CHECK (subtitle_language IN ('en', 'es', 'both', 'none')),
+    level              VARCHAR(20) NOT NULL CHECK (level IN ('beginner', 'intermediate', 'advanced')),
+    country            VARCHAR(100) NOT NULL,
+    genre              VARCHAR(50) NOT NULL,
+    release_year       INT NOT NULL,
+    url                TEXT NOT NULL,
+    archived           BOOLEAN NOT NULL DEFAULT false,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_movies_audio_language ON movies (audio_language);
+CREATE INDEX IF NOT EXISTS idx_movies_subtitle_language ON movies (subtitle_language);
+CREATE INDEX IF NOT EXISTS idx_movies_level ON movies (level);
+CREATE INDEX IF NOT EXISTS idx_movies_genre ON movies (genre);
+CREATE INDEX IF NOT EXISTS idx_movies_archived ON movies (archived);
+```
+
+#### Design notes
+
+- **Two language columns** (`audio_language`, `subtitle_language`) instead of one — a movie in Spanish with English subs is a different learning experience than one dubbed into English. This lets the frontend filter by "watch in Spanish with English subtitles" which is the most common use case.
+- **`subtitle_language` includes `none`** — some users want immersion without subtitles.
+- **`genre` is a single string**, not a join table. Keeps it simple and consistent with how podcasts handle `topic`. If multi-genre becomes needed, migrate to an array column or join table later.
+- **`search` query param** uses `ILIKE` on title/description. Good enough at this scale; add `tsvector` full-text search if the dataset grows past ~1k rows.
+- **Bulk delete** (`DELETE /api/movies` with body `{ "ids": [...] }`) — useful for admin cleanup without N individual requests.
+- **No update endpoint yet** — YAGNI. Movies are mostly static metadata. Add `PATCH` when there's a real need.
+
 ## Architecture
 
 ```mermaid
@@ -201,7 +326,7 @@ src/
 
 ## TODO
 
-- [ ] Movies resource — new table, CRUD endpoints, filters (genre, language, country, level), pagination, search
+- [ ] Movies resource — implement migration, model, repo, routes (design above)
 - [ ] Admin authentication (API key or JWT)
 - [ ] Rate limiting on public endpoints
 - [ ] Books, courses, conversation, music resource endpoints
