@@ -23,6 +23,7 @@ async fn spawn_app() -> (String, PgPool) {
     // Clean tables before each test run
     sqlx::query("DELETE FROM link_reports").execute(&pool).await.unwrap();
     sqlx::query("DELETE FROM podcasts").execute(&pool).await.unwrap();
+    sqlx::query("DELETE FROM movies").execute(&pool).await.unwrap();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -464,4 +465,219 @@ async fn get_all_report_counts() {
     assert_eq!(counts.len(), 1);
     assert_eq!(counts[0]["podcastId"], id);
     assert_eq!(counts[0]["count"], 1);
+}
+
+// ─── Movie helpers ───────────────────────────────────────
+
+async fn insert_test_movie(pool: &PgPool, language: &str) -> String {
+    let row = sqlx::query_scalar::<_, uuid::Uuid>(
+        "INSERT INTO movies (title, description, poster_url, audio_language, country, genre, release_year, url) \
+         VALUES ('Test Movie', 'A test movie', 'https://img.example.com/poster.jpg', $1, 'Mexico', 'Drama', 2020, 'https://example.com/movie') \
+         RETURNING id"
+    )
+    .bind(language)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    row.to_string()
+}
+
+// ─── GET /api/movies ─────────────────────────────────────
+
+#[tokio::test]
+async fn list_movies_returns_empty_when_no_data() {
+    let (url, _pool) = spawn_app().await;
+    let client = Client::new();
+
+    let res = client.get(format!("{url}/api/movies")).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
+    assert_eq!(body["pagination"]["totalCount"], 0);
+}
+
+#[tokio::test]
+async fn list_movies_returns_inserted_movie() {
+    let (url, pool) = spawn_app().await;
+    let client = Client::new();
+
+    insert_test_movie(&pool, "es").await;
+
+    let res = client.get(format!("{url}/api/movies")).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+
+    let body: Value = res.json().await.unwrap();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["title"], "Test Movie");
+    assert_eq!(items[0]["audioLanguage"], "es");
+}
+
+#[tokio::test]
+async fn list_movies_filters_by_language() {
+    let (url, pool) = spawn_app().await;
+    let client = Client::new();
+
+    insert_test_movie(&pool, "es").await;
+    insert_test_movie(&pool, "en").await;
+
+    let res = client
+        .get(format!("{url}/api/movies?audioLanguage=es"))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["audioLanguage"], "es");
+}
+
+// ─── GET /api/movies/:id ─────────────────────────────────
+
+#[tokio::test]
+async fn get_movie_by_id_returns_movie() {
+    let (url, pool) = spawn_app().await;
+    let client = Client::new();
+
+    let id = insert_test_movie(&pool, "en").await;
+
+    let res = client.get(format!("{url}/api/movies/{id}")).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["title"], "Test Movie");
+    assert_eq!(body["id"], id);
+}
+
+#[tokio::test]
+async fn get_movie_by_id_returns_404_for_missing() {
+    let (url, _pool) = spawn_app().await;
+    let client = Client::new();
+
+    let fake_id = uuid::Uuid::new_v4();
+    let res = client.get(format!("{url}/api/movies/{fake_id}")).send().await.unwrap();
+    assert_eq!(res.status(), 404);
+}
+
+// ─── POST /api/movies ────────────────────────────────────
+
+#[tokio::test]
+async fn create_movie_returns_201() {
+    let (url, _pool) = spawn_app().await;
+    let client = Client::new();
+
+    let body = serde_json::json!({
+        "title": "New Movie",
+        "description": "A brand new movie",
+        "posterUrl": "https://img.example.com/new.jpg",
+        "audioLanguage": "es",
+        "country": "Spain",
+        "genre": "Comedy",
+        "releaseYear": 2023,
+        "url": "https://example.com/new-movie"
+    });
+
+    let res = client
+        .post(format!("{url}/api/movies"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let movie: Value = res.json().await.unwrap();
+    assert_eq!(movie["title"], "New Movie");
+    assert_eq!(movie["audioLanguage"], "es");
+    assert_eq!(movie["releaseYear"], 2023);
+}
+
+#[tokio::test]
+async fn create_movie_validates_input() {
+    let (url, _pool) = spawn_app().await;
+    let client = Client::new();
+
+    let body = serde_json::json!({
+        "title": "",
+        "description": "ok",
+        "posterUrl": "not-a-url",
+        "audioLanguage": "invalid",
+        "country": "Mexico",
+        "genre": "Drama",
+        "releaseYear": 2020,
+        "url": "https://example.com"
+    });
+
+    let res = client
+        .post(format!("{url}/api/movies"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
+// ─── DELETE /api/movies/:id ──────────────────────────────
+
+#[tokio::test]
+async fn delete_movie_returns_204() {
+    let (url, pool) = spawn_app().await;
+    let client = Client::new();
+    let id = insert_test_movie(&pool, "en").await;
+
+    let res = client.delete(format!("{url}/api/movies/{id}")).send().await.unwrap();
+    assert_eq!(res.status(), 204);
+
+    // Confirm gone
+    let res = client.get(format!("{url}/api/movies/{id}")).send().await.unwrap();
+    assert_eq!(res.status(), 404);
+}
+
+#[tokio::test]
+async fn delete_movie_returns_404_for_missing() {
+    let (url, _pool) = spawn_app().await;
+    let client = Client::new();
+    let fake_id = uuid::Uuid::new_v4();
+
+    let res = client.delete(format!("{url}/api/movies/{fake_id}")).send().await.unwrap();
+    assert_eq!(res.status(), 404);
+}
+
+// ─── DELETE /api/movies (bulk) ───────────────────────────
+
+#[tokio::test]
+async fn bulk_delete_movies_returns_204() {
+    let (url, pool) = spawn_app().await;
+    let client = Client::new();
+
+    let id1 = insert_test_movie(&pool, "en").await;
+    let id2 = insert_test_movie(&pool, "es").await;
+
+    let body = serde_json::json!({ "ids": [id1, id2] });
+    let res = client
+        .delete(format!("{url}/api/movies"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+
+    // Confirm both gone
+    let res = client.get(format!("{url}/api/movies")).send().await.unwrap();
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn bulk_delete_movies_rejects_empty_ids() {
+    let (url, _pool) = spawn_app().await;
+    let client = Client::new();
+
+    let body = serde_json::json!({ "ids": [] });
+    let res = client
+        .delete(format!("{url}/api/movies"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
 }

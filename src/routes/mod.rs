@@ -1,5 +1,6 @@
 mod health;
 mod link_report;
+mod movie;
 mod podcast;
 
 use axum::Router;
@@ -23,7 +24,9 @@ pub fn create_router(pool: PgPool) -> Router {
             get(link_report::list_by_podcast).delete(link_report::clear_reports),
         )
         .route("/podcasts/{id}/reports/count", get(link_report::count_by_podcast))
-        .route("/link-reports/counts", get(link_report::get_all_counts));
+        .route("/link-reports/counts", get(link_report::get_all_counts))
+        .route("/movies", get(movie::list).post(movie::create).delete(movie::bulk_delete))
+        .route("/movies/{id}", get(movie::get_by_id).delete(movie::delete));
 
     Router::new()
         .route("/health", get(health::health_check))
